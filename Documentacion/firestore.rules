@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function verified() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function owner(uid) { return verified() && request.auth.uid == uid; }
+    function validProfile() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['displayName', 'createdAt', 'updatedAt'])
+        && d.keys().hasOnly(['displayName', 'createdAt', 'updatedAt'])
+        && d.displayName is string && d.displayName.size() >= 1 && d.displayName.size() <= 80
+        && d.createdAt is timestamp && d.updatedAt is timestamp;
+    }
+    function demo(event) { return event == 'xolos-atlas-demo-2026'; }
+    function availableSpace(space) { return space in ['D-01', 'P-02', 'A-02', 'A-03', 'A-04']; }
+    match /profiles/{uid} {
+      allow get: if owner(uid);
+      allow create: if owner(uid) && validProfile()
+        && request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time;
+      allow update: if owner(uid) && validProfile()
+        && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.updatedAt == request.time;
+      allow list, delete: if false;
+      match /reservations/{event} {
+        allow get: if owner(uid);
+        allow create: if owner(uid) && demo(event)
+          && request.resource.data.keys().hasAll(['spaceID', 'method', 'folio', 'createdAt', 'paymentStatus'])
+          && request.resource.data.keys().hasOnly(['spaceID', 'method', 'folio', 'createdAt', 'paymentStatus'])
+          && availableSpace(request.resource.data.spaceID)
+          && request.resource.data.method in ['Tarjeta', 'Apple Pay']
+          && request.resource.data.folio is string
+          && request.resource.data.folio.matches('XP-DEMO-[A-Fa-f0-9-]{36}')
+          && request.resource.data.paymentStatus == 'simulated'
+          && request.resource.data.createdAt == request.time
+          && !exists(/databases/$(database)/documents/demoEvents/$(event)/locks/$(request.resource.data.spaceID))
+          && getAfter(/databases/$(database)/documents/demoEvents/$(event)/locks/$(request.resource.data.spaceID)).data.reserved == true;
+        allow list, update, delete: if false;
+      }
+    }
+    match /demoEvents/{event}/locks/{space} {
+      // Only occupancy is shared; no account IDs, payment data or folios.
+      allow get, list: if verified() && demo(event);
+      allow create: if verified() && demo(event) && availableSpace(space)
+        && request.resource.data.keys().hasOnly(['reserved'])
+        && request.resource.data.reserved == true
+        && !exists(/databases/$(database)/documents/profiles/$(request.auth.uid)/reservations/$(event))
+        && getAfter(/databases/$(database)/documents/profiles/$(request.auth.uid)/reservations/$(event)).data.spaceID == space;
+      allow update, delete: if false;
+    }
+    match /profiles/{uid}/testPasses/{id} {
+      allow get: if owner(uid) && id == 'current';
+      allow create: if owner(uid) && id == 'current'
+        && request.resource.data.keys().hasAll(['fingerprint', 'label', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['fingerprint', 'label', 'createdAt'])
+        && request.resource.data.fingerprint is string
+        && request.resource.data.fingerprint.matches('[a-f0-9]{64}')
+        && request.resource.data.label == 'XP-PRUEBA-001'
+        && request.resource.data.createdAt == request.time
+        && !exists(/databases/$(database)/documents/testPassClaims/$(request.resource.data.fingerprint))
+        && getAfter(/databases/$(database)/documents/testPassClaims/$(request.resource.data.fingerprint)).data.linked == true;
+      allow delete: if owner(uid) && id == 'current'
+        && !existsAfter(/databases/$(database)/documents/testPassClaims/$(resource.data.fingerprint));
+      allow list, update: if false;
+    }
+    match /testPassClaims/{hash} {
+      // A known hash reveals only whether it is linked, never its owner's identity.
+      allow get: if verified();
+      allow create: if verified() && hash.matches('[a-f0-9]{64}')
+        && request.resource.data.keys().hasOnly(['linked']) && request.resource.data.linked == true
+        && !exists(/databases/$(database)/documents/profiles/$(request.auth.uid)/testPasses/current)
+        && getAfter(/databases/$(database)/documents/profiles/$(request.auth.uid)/testPasses/current).data.fingerprint == hash;
+      allow delete: if verified()
+        && get(/databases/$(database)/documents/profiles/$(request.auth.uid)/testPasses/current).data.fingerprint == hash
+        && !existsAfter(/databases/$(database)/documents/profiles/$(request.auth.uid)/testPasses/current);
+      allow list, update: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

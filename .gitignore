@@ -1,0 +1,11 @@
+# Archivos locales y generados
+.DS_Store
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.ipa
+*.dSYM
+.env
+.env.*
+
